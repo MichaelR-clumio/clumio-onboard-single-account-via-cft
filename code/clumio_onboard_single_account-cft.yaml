@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Clumio Connect and onboard CFT
+Parameters:
+      LambdaIAMRoleARN:
+        Type: String
+        Description: Role with in account permissions to run lambda function
+        Default: "arn:aws:iam::111222333444:role/111222333444-admin-role"
+      LambdaCodeS3BucketRepository:
+        Type: String
+        Description: A S3 bucket in same region as deployment where Lambda Layer file can be pulled from during CFT deployment
+        Default: my-s3-bucket-name
+      LambdaCodeFile:
+        Type: String
+        Description: "the S3 URI of the file minus the bucket.  I.E.  Prefix and object name"
+        Default: clumio_connect_local.zip
+      ClumioAPIToken:
+        Type: String
+        Description: "Clumio bearer token that grants privileges to run Clumio APIs."
+        Default: "eyJI..really.long.string.generated.inclumio"
+      AWSResourceList:
+        Type: CommaDelimitedList
+        Description: "Source resources - S3,EBS,RDS,DynamoDB"
+        Default: "EBS, S3"
+      ClumioAWSRegions:
+        Type: CommaDelimitedList
+        Description: "Source AWS region - must include current region"
+        Default: "us-east-2,us-east-1"
+Resources:
+    ClumioDeployLambda:
+      Type: AWS::Lambda::Function
+      Properties:
+        FunctionName: !Sub "ClumioAPI-one-time-deploy-${AWS::StackName}-DO-NOT-RUN"
+        Runtime: python3.12
+        Timeout: 600
+        Role: !Ref LambdaIAMRoleARN
+        Handler: connect_lambda.lambda_handler
+        Code:
+          S3Bucket: !Ref LambdaCodeS3BucketRepository
+          S3Key: !Ref LambdaCodeFile
+        Description: DO NOT RUN
+        TracingConfig:
+          Mode: Active
+    CustomLambdaStatus:
+      Type: AWS::CloudFormation::CustomResource
+      DependsOn:
+        - ClumioDeployLambda
+      Properties:
+        ServiceToken: !GetAtt "CustomFunction.Arn"
+        REGION: !Ref "AWS::Region"
+        ClumioAWSRegions: !Ref "ClumioAWSRegions"
+        ClumioAPIToken: !Ref "ClumioAPIToken"
+        AWSACCOUNTID: !Ref "AWS::AccountId"
+        AWSResourceList: !Ref "AWSResourceList"
+        FunctionName: !Sub "ClumioAPI-one-time-deploy-${AWS::StackName}-DO-NOT-RUN"
+    CustomFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        FunctionName: !Sub "ClumioAPILambdaAutomation-${AWS::AccountId}-${AWS::StackName}-DO-NOT-RUN"
+        Handler: index.lambda_handler
+        Description: "Launch Clumio Connect Lambda"
+        Timeout: 900
+        Role: !Ref LambdaIAMRoleARN
+        Runtime: python3.12
+        Code:
+          ZipFile: |
+            import json
+            import logging
+            import cfnresponse
+            import boto3
+            from botocore.exceptions import ClientError
+
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            def lambda_handler(event, context):
+              logger.info('got event {}'.format(event))  
+              responseData = {}
+              if event['RequestType'] == 'Delete':
+                logger.info('Incoming RequestType: Delete operation') 
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              if event['RequestType'] in ["Create", "Update"]:                      
+                # 1. retrieve resource reference ID or Name
+                
+                ServiceToken=event.get('ResourceProperties',{}).get('ServiceToken',None)
+                REGION=event.get('ResourceProperties',{}).get('REGION',None)
+                ClumioAWSRegions = event.get('ResourceProperties',{}).get('ClumioAWSRegions',None)
+                AWSACCOUNTID = event.get('ResourceProperties',{}).get('AWSACCOUNTID',None)
+                AWSResourceList = event.get('ResourceProperties',{}).get('AWSResourceList',None)
+                ClumioAPIToken = event.get('ResourceProperties',{}).get('ClumioAPIToken',None)
+                LambdaName = event.get('ResourceProperties',{}).get('FunctionName',None)
+                print(f"in create {REGION} {ClumioAWSRegions} {AWSACCOUNTID} {AWSResourceList} {ClumioAPIToken} {LambdaName}")
+                
+                Done=["CompletedWithSuccess","Success","TimedOut","Cancelled","Failed"]
+                
+                if REGION and ClumioAWSRegions and AWSACCOUNTID and AWSResourceList and ClumioAPIToken:
+                  payload = {
+                    "bear": ClumioAPIToken,
+                    "debug": 99,
+                    "aws_account_id": AWSACCOUNTID,
+                    "master_region": REGION,
+                    "aws_region_list": ClumioAWSRegions,
+                    "aws_service_list": AWSResourceList
+                  }
+                  payload_str = json.dumps(payload).encode('utf-8')
+                  client_lambda = boto3.client('lambda',region_name=REGION)
+                  response = client_lambda.invoke(
+                      FunctionName=LambdaName,
+                      Payload=payload_str
+                  )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,responseData)
+                  return {
+                      'statusCode': 200,
+                      'body': "something"
+                  }
+                else:
+                  print(f"error with data {REGION} {ClumioAWSRegions} {AWSACCOUNTID} {AWSResourceList} {ClumioAPIToken}")
+              return
