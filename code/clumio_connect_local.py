@@ -45,7 +45,7 @@ api_dict = {
                     "description": ["$eq"]
                 }
             }
-    }
+            }
 }
 
 
@@ -310,6 +310,7 @@ class API:
     def get_payload(self):
         if self.payload_flag:
             return self.payload
+
 
 class ClumioConnectAccount(API):
     def __init__(self):
